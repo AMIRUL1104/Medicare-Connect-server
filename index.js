@@ -37,6 +37,23 @@ async function run() {
     const userCollection = database.collection("user");
     const patientCollection = database.collection("Patients");
     const doctorsCollection = database.collection("Doctors");
+    const apointmentCollection = database.collection("Appointments");
+    const reviewsCollection = database.collection("Reviews");
+
+    // ================= all  stats   API ===============
+    // ===========================================================
+    app.get("/api/stats", async (req, res) => {
+      const totalDoctors = await doctorsCollection.countDocuments();
+      const totalPatients = await patientCollection.countDocuments();
+      const totalAppointments = await apointmentCollection.countDocuments();
+      const totalReviews = await reviewsCollection.countDocuments();
+      res.send({
+        totalDoctors,
+        totalPatients,
+        totalAppointments,
+        totalReviews,
+      });
+    });
 
     // ================= all  users   API ===============
     // ===========================================================
@@ -117,7 +134,70 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch doctors." });
       }
     });
+    // get doctor by id
+    app.get("/api/doctors/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
 
+        const query = {
+          _id: id,
+        };
+
+        const result = await doctorsCollection.findOne(query);
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+
+    // ================= all  appointment ralated   API ===============
+    // ===========================================================
+    app.get("/api/appointmentslots/:id", async (req, res) => {
+      try {
+        const doctorId = req.params.id;
+        const date = req.query.date;
+
+        if (!date) {
+          return res.status(400).json({
+            success: false,
+            message: "Date is required (YYYY-MM-DD)",
+          });
+        }
+
+        // Step 1: fetch all appointments for this doctor + date
+        const appointments = await apointmentCollection
+          .find({
+            doctorId,
+            date,
+          })
+          .toArray();
+
+        // Step 2: extract booked slots
+        const bookedSlots = appointments.map((app) => app.slot);
+
+        // Step 3: response format
+        return res.status(200).json({
+          success: true,
+          doctorId,
+          date,
+          totalBooked: bookedSlots.length,
+          bookedSlots,
+          appointments,
+        });
+      } catch (error) {
+        console.error("Slot fetch error:", error);
+
+        return res.status(500).json({
+          success: false,
+          message: "Internal server error",
+        });
+      }
+    });
+
+    // ================= all  users   API ===============
     // ===========================================================
     // Send a ping to confirm a successful connection
     // ===========================================================
