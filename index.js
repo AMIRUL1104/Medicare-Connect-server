@@ -197,6 +197,55 @@ async function run() {
       }
     });
 
+    app.get("/api/appointments/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        const query = {
+          _id: new ObjectId(id),
+        };
+
+        const result = await apointmentCollection.findOne(query);
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+
+    app.post("/api/appointments", async (req, res) => {
+      const newAppointment = req.body;
+      const result = await apointmentCollection.insertOne(newAppointment);
+      res.send(result);
+    });
+    app.patch("/api/appointments", async (req, res) => {
+      try {
+        const { id, status } = req.body;
+
+        if (!id || !status) {
+          return res.status(400).send({ message: "Missing id or status" });
+        }
+
+        const query = {
+          _id: new ObjectId(id),
+        };
+
+        // $set অপারেটর ব্যবহার করে শুধু status আপডেট করা হচ্ছে
+        const updateDoc = {
+          $set: { status: status },
+        };
+
+        const result = await apointmentCollection.updateOne(query, updateDoc);
+
+        res.send(result);
+      } catch (error) {
+        console.error("Database update error:", error);
+        res.status(500).send({ error: "Internal Server Error" });
+      }
+    });
+
     // ================= all  users   API ===============
     // ===========================================================
     // Send a ping to confirm a successful connection
