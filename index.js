@@ -39,6 +39,7 @@ async function run() {
     const doctorsCollection = database.collection("Doctors");
     const apointmentCollection = database.collection("Appointments");
     const reviewsCollection = database.collection("Reviews");
+    const paymentCollection = database.collection("Payments");
 
     // ================= all  stats   API ===============
     // ===========================================================
@@ -71,6 +72,24 @@ async function run() {
     app.get("/api/patients", async (req, res) => {
       const result = await patientCollection.find().toArray();
       res.send(result);
+    });
+    // get patient by login session id(userId)
+    app.get("/api/patient/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        const query = {
+          userId: id,
+        };
+
+        const result = await patientCollection.findOne(query);
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
     });
 
     app.post("/api/doctors", async (req, res) => {
@@ -247,6 +266,43 @@ async function run() {
     });
 
     // ================= all  users   API ===============
+    // ================= all  paymennt related    API ===============
+    app.post("/api/payment", async (req, res) => {
+      const payment = req.body;
+      const result = await paymentCollection.insertOne(payment);
+      res.send(result);
+    });
+
+    app.get("/api/payment/:id", async (req, res) => {
+      try {
+        const patientId = req.params.id;
+
+        const query = {
+          patientId: patientId,
+        };
+
+        // ১. ডাটাবেজ থেকে ওই ইউজারের সকল পেমেন্ট হিস্ট্রি নিয়ে আসা
+        const history = await paymentCollection.find(query).toArray();
+
+        // ২. reduce মেথড দিয়ে সকল পেমেন্টের amount যোগ করা
+        const totalPaid = history.reduce((sum, item) => {
+          return sum + Number(item.amount || 0);
+        }, 0);
+
+        // ৩. অবজেক্ট আকারে রেসপন্স পাঠানো
+        res.status(200).json({
+          success: true,
+          totalPaid: totalPaid, // মোট কত টাকা পে করেছে
+          history: history, // পেমেন্টের সম্পূর্ণ লিস্ট
+        });
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          error: "Internal Server Error",
+        });
+      }
+    });
+
     // ===========================================================
     // Send a ping to confirm a successful connection
     // ===========================================================
