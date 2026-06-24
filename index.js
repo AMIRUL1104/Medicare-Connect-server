@@ -346,6 +346,82 @@ async function run() {
       }
     });
 
+    // create a review update api for patient
+    app.patch("/api/reviews", async (req, res) => {
+      try {
+        const id = req.body.id;
+
+        // 💡 ফ্রন্টএন্ড formData থেকে ফিল্ডগুলো ডিস্ট্রাকচার করে নেওয়া হলো
+        const { rating, testimonial, doctorName, specialization } = req.body;
+
+        const query = {
+          _id: new ObjectId(id),
+        };
+
+        // 💡 শুধুমাত্র আপডেটযোগ্য ফিল্ডগুলো ডাটাবেসে সেট করা হচ্ছে
+        // এর ফলে কেউ হ্যাক করে patientId বা doctorId বদলে দিতে পারবে না
+        const updateDoc = {
+          $set: {
+            rating: Number(rating), // নাম্বার টাইপ নিশ্চিত করা হলো
+            testimonial: testimonial,
+            doctorName: doctorName,
+            specialization: specialization,
+          },
+        };
+
+        const result = await reviewsCollection.updateOne(query, updateDoc);
+
+        // যদি এই আইডির কোনো রিভিউ খুঁজে না পাওয়া যায়
+        if (result.matchedCount === 0) {
+          return res
+            .status(404)
+            .json({ success: false, error: "Review not found" });
+        }
+
+        res.status(200).json({
+          success: true,
+          message: "Review updated successfully!",
+          result,
+        });
+      } catch (error) {
+        console.error("Error updating review:", error);
+        res.status(500).json({
+          success: false,
+          error: "Internal Server Error",
+        });
+      }
+    });
+    // create a review post api for patient
+    app.post("/api/reviews", async (req, res) => {
+      try {
+        const review = req.body;
+        const result = await reviewsCollection.insertOne(review);
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+
+    // create a review delete api for patient and admin only
+    app.delete("/api/reviews/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        const query = {
+          _id: new ObjectId(id),
+        };
+
+        const result = await reviewsCollection.deleteOne(query);
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+
     // ===========================================================
     // Send a ping to confirm a successful connection
     // ===========================================================
