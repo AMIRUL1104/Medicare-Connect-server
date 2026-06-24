@@ -219,12 +219,23 @@ async function run() {
     app.get("/api/appointments/:id", async (req, res) => {
       try {
         const id = req.params.id;
+        const forPayment = req.query.forPayment;
+        const forPatient = req.query.forPatient;
 
-        const query = {
-          _id: new ObjectId(id),
-        };
+        const query = {};
+        if (forPatient) {
+          query.patientId = id;
+        }
+        if (forPayment) {
+          query._id = new ObjectId(id);
+        }
 
-        const result = await apointmentCollection.findOne(query);
+        let result;
+        if (forPayment) {
+          result = await apointmentCollection.findOne(query);
+        } else {
+          result = await apointmentCollection.find(query).toArray();
+        }
 
         res.send(result);
       } catch (error) {
@@ -275,11 +286,16 @@ async function run() {
 
     app.get("/api/payment/:id", async (req, res) => {
       try {
-        const patientId = req.params.id;
-
-        const query = {
-          patientId: patientId,
-        };
+        const id = req.params.id;
+        const forDoctor = req.query.forDoctor;
+        const forPatient = req.query.forPatient;
+        const query = {};
+        if (forDoctor) {
+          query.doctorId = id;
+        }
+        if (forPatient) {
+          query.patientId = id;
+        }
 
         // ১. ডাটাবেজ থেকে ওই ইউজারের সকল পেমেন্ট হিস্ট্রি নিয়ে আসা
         const history = await paymentCollection.find(query).toArray();
@@ -295,6 +311,33 @@ async function run() {
           totalPaid: totalPaid, // মোট কত টাকা পে করেছে
           history: history, // পেমেন্টের সম্পূর্ণ লিস্ট
         });
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          error: "Internal Server Error",
+        });
+      }
+    });
+
+    // ===================all review related api================
+    app.get("/api/reviews/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const forDoctor = req.query.forDoctor;
+        const forPatient = req.query.forPatient;
+        const query = {};
+        if (forDoctor) {
+          query.doctorId = id;
+        }
+        if (forPatient) {
+          query.patientId = id;
+        }
+
+        // ১. ডাটাবেজ থেকে ওই ইউজারের সকল পেমেন্ট হিস্ট্রি নিয়ে আসা
+        const reviews = await reviewsCollection.find(query).toArray();
+
+        // ৩. অবজেক্ট আকারে রেসপন্স পাঠানো
+        res.status(200).json(reviews);
       } catch (error) {
         res.status(500).json({
           success: false,
