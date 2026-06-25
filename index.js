@@ -56,6 +56,80 @@ async function run() {
       });
     });
 
+    app.get("/api/stats/doctor", async (req, res) => {
+      try {
+        const id = req.query.id;
+
+        if (!id) {
+          return res
+            .status(400)
+            .json({ success: false, error: "Doctor ID is required" });
+        }
+
+        // ১. মোট অ্যাপয়েন্টমেন্ট সংখ্যা
+        const totalAppointment = await apointmentCollection.countDocuments({
+          doctorId: id,
+        });
+
+        // ২. পেন্ডিং অ্যাপয়েন্টমেন্ট রিকোয়েস্ট সংখ্যা (স্ট্যাটাস চেক)
+        const pendingRequests = await apointmentCollection.countDocuments({
+          doctorId: id,
+          status: "cancelled", // আপনার ডাটাবেসের স্ট্যাটাস ফিল্ড অনুযায়ী মিলিয়ে নেবেন
+        });
+
+        // ৩. মোট আর্নিং হিসাব (Database level aggregation can be faster, but your reduce logic is fine)
+        const history = await paymentCollection
+          .find({ doctorId: id })
+          .toArray();
+        const totalEarning = history.reduce(
+          (sum, item) => sum + Number(item.amount || 0),
+          0,
+        );
+
+        // ৪. ইউনিক পেশেন্ট কাউন্ট এগ্রিগেশন
+        const patientResult = await apointmentCollection
+          .aggregate([
+            { $match: { doctorId: id } },
+            { $group: { _id: "$patientId" } },
+            { $group: { _id: null, totalPatient: { $sum: 1 } } },
+            { $project: { _id: 0, totalPatient: 1 } },
+          ])
+          .toArray();
+
+        // 🛠️ ফিক্স: অ্যারের প্রথম এলিমেন্ট থেকে ডেটা রিড করা হলো
+        const finalPatientCount =
+          patientResult.length > 0 ? patientResult.totalPatient : 0;
+
+        // ৫. এভারেজ রেটিং এগ্রিগেশন
+        const aggResult = await reviewsCollection
+          .aggregate([
+            { $match: { doctorId: id } },
+            { $group: { _id: null, avgRating: { $avg: "$rating" } } },
+            { $project: { _id: 0, avgRating: { $round: ["$avgRating", 1] } } },
+          ])
+          .toArray();
+
+        const finalAvgRating = aggResult.length > 0 ? aggResult.avgRating : 0;
+
+        // ── 🌟 প্রফেশনাল রেসপন্স সেন্ড ──
+        res.status(200).json({
+          success: true,
+          stats: {
+            totalAppointments: totalAppointment,
+            pendingRequests: pendingRequests,
+            totalEarnings: totalEarning,
+            patientCount: finalPatientCount,
+            averageRating: finalAvgRating,
+          },
+        });
+      } catch (error) {
+        console.error("Error fetching doctor stats:", error);
+        res
+          .status(500)
+          .json({ success: false, error: "Internal Server Error" });
+      }
+    });
+
     // ================= all  users   API ===============
     // ===========================================================
     app.get("/api/users", async (req, res) => {
@@ -157,10 +231,15 @@ async function run() {
     app.get("/api/doctors/:id", async (req, res) => {
       try {
         const id = req.params.id;
+        const from = req.query.from;
 
-        const query = {
-          _id: id,
-        };
+        const query = {};
+        if (from === "userId") {
+          query.userId = id;
+        }
+        if (from === "id") {
+          query._id = new ObjectId(id);
+        }
 
         const result = await doctorsCollection.findOne(query);
 
@@ -221,6 +300,7 @@ async function run() {
         const id = req.params.id;
         const forPayment = req.query.forPayment;
         const forPatient = req.query.forPatient;
+        const forDoctor = req.query.forDoctor;
 
         const query = {};
         if (forPatient) {
@@ -228,6 +308,9 @@ async function run() {
         }
         if (forPayment) {
           query._id = new ObjectId(id);
+        }
+        if (forDoctor) {
+          query.doctorId = id;
         }
 
         let result;
@@ -252,26 +335,76 @@ async function run() {
     });
     app.patch("/api/appointments", async (req, res) => {
       try {
-        const { id, status } = req.body;
-
-        if (!id || !status) {
-          return res.status(400).send({ message: "Missing id or status" });
-        }
+        const {
+          id,
+          paymentStatus,
+          appointmentStatus,
+          workingHours,
+          availableDays,
+          slotDuration,
+        } = req.body;
 
         const query = {
           _id: new ObjectId(id),
         };
 
         // $set অপারেটর ব্যবহার করে শুধু status আপডেট করা হচ্ছে
-        const updateDoc = {
-          $set: { status: status },
-        };
+        let updateDoc;
+        if (paymentStatus) {
+          updateDoc = {
+            $set: {
+              paymentStatus: paymentStatus,
+            },
+          };
+        }
+        if (appointmentStatus) {
+          updateDoc = {
+            $set: {
+              appointmentStatus: appointmentStatus,
+            },
+          };
+        }
 
         const result = await apointmentCollection.updateOne(query, updateDoc);
 
         res.send(result);
       } catch (error) {
         console.error("Database update error:", error);
+        res.status(500).send({ error: "Internal Server Error" });
+      }
+    });
+
+    app.patch("/api/doctors/schedule", async (req, res) => {
+      try {
+        const { userId, availableDays, workingHours, slotDuration } = req.body;
+
+        if (!userId) {
+          return res.status(400).send({ error: "Missing doctor userId" });
+        }
+
+        // ডক্টর কালেকশনের জন্য কোয়েরি (userId ধরে ফিল্টার করা হচ্ছে)
+        const query = { userId: userId };
+
+        // ডাইনামিক অবজেক্ট তৈরি
+        let updateFields = {};
+        if (availableDays) updateFields.availableDays = availableDays;
+        if (workingHours) updateFields.workingHours = workingHours;
+        if (slotDuration) updateFields.slotDuration = parseInt(slotDuration);
+
+        if (Object.keys(updateFields).length === 0) {
+          return res
+            .status(400)
+            .send({ error: "No configuration fields provided to update" });
+        }
+
+        const updateDoc = { $set: updateFields };
+
+        // মনে রাখবেন: এখানে doctorsCollection হবে, appointments নয়!
+        const result = await doctorsCollection.updateOne(query, updateDoc);
+
+        res.send(result);
+      } catch (error) {
+        console.error("Doctor schedule update error:", error);
         res.status(500).send({ error: "Internal Server Error" });
       }
     });
