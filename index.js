@@ -40,6 +40,7 @@ async function run() {
     const apointmentCollection = database.collection("Appointments");
     const reviewsCollection = database.collection("Reviews");
     const paymentCollection = database.collection("Payments");
+    const prescriptionCollection = database.collection("Prescriptions");
 
     // ================= all  stats   API ===============
     // ===========================================================
@@ -391,6 +392,7 @@ async function run() {
         const forPayment = req.query.forPayment;
         const forPatient = req.query.forPatient;
         const forDoctor = req.query.forDoctor;
+        const forAppointment = req.query.forAppointment;
 
         const query = {};
         if (forPatient) {
@@ -402,9 +404,12 @@ async function run() {
         if (forDoctor) {
           query.doctorId = id;
         }
+        if (forAppointment) {
+          query._id = new ObjectId(id);
+        }
 
         let result;
-        if (forPayment) {
+        if (forPayment || forAppointment) {
           result = await apointmentCollection.findOne(query);
         } else {
           result = await apointmentCollection.find(query).toArray();
@@ -635,6 +640,79 @@ async function run() {
         };
 
         const result = await reviewsCollection.deleteOne(query);
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+
+    // =================== ALL prescription related api  =================
+    app.post("/api/prescriptions", async (req, res) => {
+      try {
+        const prescription = req.body;
+        const result = await prescriptionCollection.insertOne(prescription);
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+    app.patch("/api/prescriptions", async (req, res) => {
+      try {
+        const id = req.body.prescriptionId;
+        const { diagnosis, medications, notes } = req.body;
+        const query = {
+          _id: new ObjectId(id),
+        };
+        const updateFields = {};
+        if (diagnosis) {
+          updateFields.diagnosis = diagnosis;
+        }
+        if (medications) {
+          updateFields.medications = medications;
+        }
+        if (notes) {
+          updateFields.notes = notes;
+        }
+        if (Object.keys(updateFields).length === 0) {
+          return res
+            .status(400)
+            .send({ error: "No configuration fields provided to update" });
+        }
+
+        const updateDoc = { $set: updateFields };
+
+        const result = await prescriptionCollection.updateOne(query, updateDoc);
+
+        res.send(result);
+      } catch (error) {
+        console.error("Doctor schedule update error:", error);
+        res.status(500).send({ error: "Internal Server Error" });
+      }
+    });
+    app.get("/api/prescriptions/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const forDoctor = req.query.forDoctor;
+        const forPatient = req.query.forPatient;
+        const query = {};
+        if (forDoctor) {
+          query.doctorId = id;
+        } else if (forPatient) {
+          query.patientId = id;
+        } else {
+          query._id = new ObjectId(id);
+        }
+
+        if (forDoctor || forPatient) {
+          const result = await prescriptionCollection.find(query).toArray();
+          res.send(result);
+          return;
+        }
+        const result = await prescriptionCollection.findOne(query);
         res.send(result);
       } catch (error) {
         res.status(500).json({
