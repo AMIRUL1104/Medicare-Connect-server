@@ -74,7 +74,7 @@ async function run() {
         // ২. পেন্ডিং অ্যাপয়েন্টমেন্ট রিকোয়েস্ট সংখ্যা (স্ট্যাটাস চেক)
         const pendingRequests = await apointmentCollection.countDocuments({
           doctorId: id,
-          status: "cancelled", // আপনার ডাটাবেসের স্ট্যাটাস ফিল্ড অনুযায়ী মিলিয়ে নেবেন
+          status: "pending", // আপনার ডাটাবেসের স্ট্যাটাস ফিল্ড অনুযায়ী মিলিয়ে নেবেন
         });
 
         // ৩. মোট আর্নিং হিসাব (Database level aggregation can be faster, but your reduce logic is fine)
@@ -90,7 +90,7 @@ async function run() {
         const patientResult = await apointmentCollection
           .aggregate([
             { $match: { doctorId: id } },
-            { $group: { _id: "$patientId" } },
+            { $group: { _id: "patientId" } },
             { $group: { _id: null, totalPatient: { $sum: 1 } } },
             { $project: { _id: 0, totalPatient: 1 } },
           ])
@@ -166,6 +166,7 @@ async function run() {
       }
     });
 
+    // ================= all  doctors   API ===============
     app.post("/api/doctors", async (req, res) => {
       const newUser = req.body;
       const result = await doctorsCollection.insertOne(newUser);
@@ -227,7 +228,54 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch doctors." });
       }
     });
+
+    app.get("/api/doctors/search", async (req, res) => {
+      try {
+        const search = req.query.search;
+        // const verificationStatus = req.query.verificationStatus;
+
+        // ডাইনামিক কোয়েরি অবজেক্ট তৈরি
+        const query = {};
+
+        // ১. নাম দিয়ে সার্চ করার লজিক (Case-insensitive)
+        if (search) {
+          query.doctorName = { $regex: search, $options: "i" };
+        }
+
+        // ২. ভেরিফিকেশন স্ট্যাটাস ফিল্টারিং (যেমন: verified)
+
+        // query.verificationStatus = verificationStatus || "verified";
+
+        // ৩. ডাটাবেজ থেকে ডাটা নিয়ে আসা এবং ফিল্ড প্রজেকশন করা (প্রয়োজনীয় ফিল্ড বাদে বাকিগুলো বাদ দেওয়া)
+        const result = await doctorsCollection
+          .find(query)
+          .project({
+            _id: 1,
+            doctorName: 1,
+            specialization: 1,
+            userId: 1,
+          })
+          .toArray();
+
+        // ফ্রন্টএন্ডে যাতে সহজে অবজেক্ট রিড করা যায় তাই ফরম্যাট করে পাঠানো
+        const formattedResult = result.map((doc) => ({
+          _id: doc._id,
+          name: doc.doctorName,
+          specialization: doc.specialization,
+          userId: doc.userId,
+        }));
+
+        res.send(formattedResult);
+      } catch (error) {
+        console.error("Doctor search API error:", error);
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+
     // get doctor by id
+
     app.get("/api/doctors/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -250,6 +298,48 @@ async function run() {
         });
       }
     });
+
+    app.patch("/api/doctors/profile", async (req, res) => {
+      try {
+        const {
+          userId,
+          qualifications,
+          experience,
+          consultationFee,
+          specialization,
+          hospitalName,
+        } = req.body;
+
+        if (!userId) {
+          return res.status(400).send({ error: "Missing doctor userId" });
+        }
+        const query = { userId: userId };
+
+        // ডাইনামিক অবজেক্ট তৈরি
+        let updateFields = {};
+        if (qualifications) updateFields.qualifications = qualifications;
+        if (experience) updateFields.experience = experience;
+        if (consultationFee) updateFields.consultationFee = consultationFee;
+        if (specialization) updateFields.specialization = specialization;
+        if (hospitalName) updateFields.hospitalName = hospitalName;
+
+        if (Object.keys(updateFields).length === 0) {
+          return res
+            .status(400)
+            .send({ error: "No configuration fields provided to update" });
+        }
+
+        const updateDoc = { $set: updateFields };
+        const result = await doctorsCollection.updateOne(query, updateDoc);
+
+        res.send(result);
+      } catch (error) {
+        console.error("Database update error:", error);
+        res.status(500).send({ error: "Internal Server Error" });
+      }
+    });
+
+    // ডক্টর কালেকশনের জন্য কোয়েরি (userId ধরে ফিল্টার করা হচ্ছে)
 
     // ================= all  appointment ralated   API ===============
     // ===========================================================
@@ -485,7 +575,7 @@ async function run() {
         const id = req.body.id;
 
         // 💡 ফ্রন্টএন্ড formData থেকে ফিল্ডগুলো ডিস্ট্রাকচার করে নেওয়া হলো
-        const { rating, testimonial, doctorName, specialization } = req.body;
+        const { rating, testimonial } = req.body;
 
         const query = {
           _id: new ObjectId(id),
@@ -497,8 +587,6 @@ async function run() {
           $set: {
             rating: Number(rating), // নাম্বার টাইপ নিশ্চিত করা হলো
             testimonial: testimonial,
-            doctorName: doctorName,
-            specialization: specialization,
           },
         };
 
