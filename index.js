@@ -260,6 +260,54 @@ async function run() {
       }
     });
 
+    app.get("/api/reviews/chartdata", async (req, res) => {
+      try {
+        // ── MongoDB Aggregation Pipeline ──────────────────────────
+        const topDoctorsData = await reviewsCollection
+          .aggregate([
+            {
+              // ১. প্রতি doctorId এর উপর ভিত্তি করে গ্রুপ করা
+              $group: {
+                _id: "$doctorId",
+                doctorName: { $first: "$doctorName" }, // প্রথম ডকুমেন্ট থেকে নাম নেওয়া
+                // যদি আপনার ডক্টর স্কিমা বা রিভিউতে ইমেজ থাকে, সেটার জন্য (ভবিষ্যতের সেফটি):
+                doctorImage: { $first: "$doctorPhoto" }, // অথবা ডক্টর কালেকশন থেকে লুপ করে আনা যায়, আপাতত প্রথম এন্ট্রি নিচ্ছি
+                averageRating: { $avg: "$rating" }, // রেটিং এর গড় (Average) বের করা
+                totalReviews: { $sum: 1 }, // ওই ডক্টরের মোট রিভিউ সংখ্যা (অপশনাল)
+              },
+            },
+            {
+              // ২. গড় রেটিং অনুযায়ী বড় থেকে ছোট (Descending) সর্ট করা
+              $sort: { averageRating: -1 },
+            },
+            {
+              // ৩. শুধুমাত্র টপ ৫ জন ডক্টর নেওয়া
+              $limit: 5,
+            },
+            {
+              // ৪. ফ্রন্টএন্ডে পাঠানোর জন্য প্রজেক্ট বা ফরম্যাট করা (গড় রেটিং ২ ডেসিমেল এ ফিক্স করার জন্য সুবিধা)
+              $project: {
+                _id: 1,
+                doctorName: 1,
+                doctorImage: 1,
+                averageRating: { $round: ["$averageRating", 1] }, // ১ ডেসিমেল পর্যন্ত রাউন্ড (যেমন: 4.8)
+                totalReviews: 1,
+              },
+            },
+          ])
+          .toArray();
+
+        // res.send({ success: true, data: topDoctorsData }, { status: 200 });
+        res.send(topDoctorsData);
+      } catch (error) {
+        console.error("Analytics API Error:", error);
+        return NextResponse.json(
+          { success: false, message: "Internal Server Error" },
+          { status: 500 },
+        );
+      }
+    });
+
     // user
     // ================= all  users   API ===============
     // ===========================================================
@@ -648,6 +696,12 @@ async function run() {
     app.post("/api/payment", async (req, res) => {
       const payment = req.body;
       const result = await paymentCollection.insertOne(payment);
+      res.send(result);
+    });
+
+    // get all payments history
+    app.get("/api/payment", async (req, res) => {
+      const result = await paymentCollection.find().toArray();
       res.send(result);
     });
 
