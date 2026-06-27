@@ -72,13 +72,13 @@ async function run() {
           doctorId: id,
         });
 
-        // ২. পেন্ডিং অ্যাপয়েন্টমেন্ট রিকোয়েস্ট সংখ্যা (স্ট্যাটাস চেক)
+        // ২. পেন্ডিং অ্যাপয়েন্টমেন্ট রিকোয়েস্ট সংখ্যা (আপনার স্ট্রাকচার অনুযায়ী appointmentStatus ফিল্ড ইউজ করা হয়েছে)
         const pendingRequests = await apointmentCollection.countDocuments({
           doctorId: id,
-          status: "pending", // আপনার ডাটাবেসের স্ট্যাটাস ফিল্ড অনুযায়ী মিলিয়ে নেবেন
+          appointmentStatus: "pending",
         });
 
-        // ৩. মোট আর্নিং হিসাব (Database level aggregation can be faster, but your reduce logic is fine)
+        // ৩. মোট আর্নিং হিসাব
         const history = await paymentCollection
           .find({ doctorId: id })
           .toArray();
@@ -91,15 +91,14 @@ async function run() {
         const patientResult = await apointmentCollection
           .aggregate([
             { $match: { doctorId: id } },
-            { $group: { _id: "patientId" } },
+            { $group: { _id: "$patientId" } }, // ✅ $ sign added
             { $group: { _id: null, totalPatient: { $sum: 1 } } },
             { $project: { _id: 0, totalPatient: 1 } },
           ])
           .toArray();
 
-        // 🛠️ ফিক্স: অ্যারের প্রথম এলিমেন্ট থেকে ডেটা রিড করা হলো
         const finalPatientCount =
-          patientResult.length > 0 ? patientResult.totalPatient : 0;
+          patientResult.length > 0 ? patientResult[0].totalPatient : 0; // ✅ [0] added
 
         // ৫. এভারেজ রেটিং এগ্রিগেশন
         const aggResult = await reviewsCollection
@@ -110,7 +109,8 @@ async function run() {
           ])
           .toArray();
 
-        const finalAvgRating = aggResult.length > 0 ? aggResult.avgRating : 0;
+        const finalAvgRating =
+          aggResult.length > 0 ? aggResult[0].avgRating : 0; // ✅ [0] added
 
         // ── 🌟 প্রফেশনাল রেসপন্স সেন্ড ──
         res.status(200).json({
@@ -131,6 +131,136 @@ async function run() {
       }
     });
 
+    app.get("/api/stats/admin", async (req, res) => {
+      try {
+        // ১. মোট অ্যাপয়েন্টমেন্ট সংখ্যা (status pending বা reject বাদে)
+        const totalAppointments = await apointmentCollection.countDocuments({
+          appointmentStatus: { $nin: ["pending", "reject"] },
+        });
+
+        // ২. মোট ভেরিফাইড ডাক্তার সংখ্যা
+        const totalDoctors = await doctorsCollection.countDocuments({
+          verificationStatus: "verified",
+        });
+
+        // ৩. মোট রোগী সংখ্যা
+        const totalPatients = await patientCollection.countDocuments();
+
+        // ৪. মোট আর্নিং বা পেমেন্ট (MongoDB Aggregation ব্যবহার করে)
+        const paymentStats = await paymentCollection
+          .aggregate([
+            {
+              $group: {
+                _id: null,
+                amount: { $sum: "$amount" }, // আপনার DB ফিল্ডের নাম 'amount' হলে
+              },
+            },
+          ])
+          .toArray();
+
+        // যদি পেমেন্ট না থাকে তবে ০ দেখাবে
+        const totalEarnings =
+          paymentStats.length > 0 ? paymentStats[0].amount : 0;
+
+        // সাকসেস রেসপন্স
+        res.status(200).json({
+          success: true,
+          stats: {
+            totalAppointments,
+            totalEarnings,
+            totalPatients,
+            totalDoctors,
+          },
+        });
+      } catch (error) {
+        console.error("Error fetching admin stats:", error);
+        res.status(500).json({
+          success: false,
+          error: "Internal Server Error",
+        });
+      }
+    });
+
+    // ============== admin related api =============
+    app.get("/api/admin/doctor-rating-stats", async (req, res) => {
+      try {
+        const statistic = await doctorsCollection
+          .aggregate([
+            {
+              // ১. গড়ে রেটিংগুলোকে রাউন্ড (Round) করা হচ্ছে (যেমন: 4.7 বা 4.5 কে 5 অথবা 4 এ রূপান্তর)
+              // যদি আপনার ফিল্ডের নাম averageRating না হয়ে অন্য কিছু হয়, তবে সেটি দিন।
+              $project: {
+                roundedRating: { $round: ["$averageRating", 0] },
+              },
+            },
+            {
+              // ২. রাউন্ডেড রেটিং অনুযায়ী গ্রুপ করে মোট ডাক্তারের সংখ্যা গোনা হচ্ছে
+              $group: {
+                _id: "$roundedRating",
+                count: { $sum: 1 },
+              },
+            },
+            {
+              // ৩. রেটিং ৫ থেকে ১ ক্রমানুসারে সাজানো (Descending order)
+              $sort: { _id: -1 },
+            },
+          ])
+          .toArray();
+
+        // ৪. চার্টের সুবিধার জন্য ডাটা ফরম্যাট করা (যাতে কোনো স্টার খালি থাকলে ০ দেখায়)
+        const ratingMap = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+
+        statistic.forEach((item) => {
+          // কেবল ১ থেকে ৫ এর মধ্যে বৈধ রেটিংগুলো ম্যাপে বসবে
+          if (item._id >= 1 && item._id <= 5) {
+            ratingMap[item._id] = item.count;
+          }
+        });
+
+        // Recharts-এর জন্য ফ্রন্টএন্ড ফ্রেন্ডলি অ্যারে ফরম্যাট
+        const formattedData = [
+          { rating: "5 Star", doctors: ratingMap[5] },
+          { rating: "4 Star", doctors: ratingMap[4] },
+          { rating: "3 Star", doctors: ratingMap[3] },
+          { rating: "2 Star", doctors: ratingMap[2] },
+          { rating: "1 Star", doctors: ratingMap[1] },
+        ];
+
+        res.status(200).json({ success: true, data: formattedData });
+      } catch (error) {
+        console.error("Error fetching doctor rating stats:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Internal Server Error" });
+      }
+    });
+
+    // all appointments
+    app.get("/api/appointments", async (req, res) => {
+      try {
+        const result = await apointmentCollection.find().toArray();
+        res.send(result);
+      } catch (error) {
+        res
+          .status(500)
+          .json({ success: false, message: "Internal Server Error" });
+      }
+    });
+
+    app.delete("/api/users/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await userCollection.deleteOne(query);
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+
+    // user
     // ================= all  users   API ===============
     // ===========================================================
     app.get("/api/users", async (req, res) => {
@@ -149,7 +279,7 @@ async function run() {
       res.send(result);
     });
     // get patient by login session id(userId)
-    app.get("/api/patient/:id", async (req, res) => {
+    app.get("/api/patients/:id", async (req, res) => {
       try {
         const id = req.params.id;
 
@@ -176,6 +306,7 @@ async function run() {
 
     app.get("/api/doctors", async (req, res) => {
       try {
+        const allDoctors = req.query.allDoctors;
         const search = req.query.search;
         const verificationStatus = req.query.verificationStatus;
         const sort = req.query.sort; // e.g. "fee-asc", "fee-desc", "experience-asc", "experience-desc", "rating-desc"
@@ -184,6 +315,11 @@ async function run() {
 
         // ── Build the MongoDB FILTER object only — never mix skip/limit/sort in here ──
         let query = {};
+        if (allDoctors) {
+          const allDoctors = await doctorsCollection.find().toArray();
+          res.send(allDoctors);
+          return;
+        }
 
         if (search) {
           query.$or = [
@@ -309,6 +445,7 @@ async function run() {
           consultationFee,
           specialization,
           hospitalName,
+          verificationStatus,
         } = req.body;
 
         if (!userId) {
@@ -323,6 +460,8 @@ async function run() {
         if (consultationFee) updateFields.consultationFee = consultationFee;
         if (specialization) updateFields.specialization = specialization;
         if (hospitalName) updateFields.hospitalName = hospitalName;
+        if (verificationStatus)
+          updateFields.verificationStatus = verificationStatus;
 
         if (Object.keys(updateFields).length === 0) {
           return res
