@@ -41,6 +41,68 @@ async function run() {
     const reviewsCollection = database.collection("Reviews");
     const paymentCollection = database.collection("Payments");
     const prescriptionCollection = database.collection("Prescriptions");
+    const sessionCollection = database.collection("session");
+
+    // ================verify related ==================
+
+    const logger = (req, res, next) => {
+      console.log("logger logged", req.params);
+      next();
+    };
+
+    const verifyToken = async (req, res, next) => {
+      // console.log("headers :", req.headers);
+      // console.log("userId :", req.params);
+      const authHeader = req.headers?.authorization;
+      if (!authHeader) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      const token = authHeader.split(" ")[1];
+      if (!token) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+      const query = { token: token };
+
+      const session = await sessionCollection.findOne(query);
+      // console.log("session", session, token);
+      const userId = session.userId;
+
+      const userQuery = {
+        _id: userId,
+      };
+
+      const user = await userCollection.findOne(userQuery);
+      // console.log("User of the session ", user);
+      req.user = user;
+      next();
+    };
+
+    // must be user after verifying middleware
+    const verifyPatient = (req, res, next) => {
+      if (req.user?.role !== "patient") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+
+      next();
+    };
+
+    // must be user after verifying middleware
+    const verifyAdmin = (req, res, next) => {
+      if (req.user?.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+
+      next();
+    };
+    // must be user after verifying middleware
+    const verifyDoctor = (req, res, next) => {
+      if (req.user?.role !== "doctor") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+
+      next();
+    };
 
     // ================= all  stats   API ===============
     // ===========================================================
@@ -57,81 +119,88 @@ async function run() {
       });
     });
 
-    app.get("/api/stats/doctor", async (req, res) => {
-      try {
-        const id = req.query.id;
+    app.get(
+      "/api/stats/doctor",
+      verifyToken,
+      verifyDoctor,
+      async (req, res) => {
+        try {
+          const id = req.query.id;
 
-        if (!id) {
-          return res
-            .status(400)
-            .json({ success: false, error: "Doctor ID is required" });
+          if (!id) {
+            return res
+              .status(400)
+              .json({ success: false, error: "Doctor ID is required" });
+          }
+
+          // ১. মোট অ্যাপয়েন্টমেন্ট সংখ্যা
+          const totalAppointment = await apointmentCollection.countDocuments({
+            doctorId: id,
+          });
+
+          // ২. পেন্ডিং অ্যাপয়েন্টমেন্ট রিকোয়েস্ট সংখ্যা (আপনার স্ট্রাকচার অনুযায়ী appointmentStatus ফিল্ড ইউজ করা হয়েছে)
+          const pendingRequests = await apointmentCollection.countDocuments({
+            doctorId: id,
+            appointmentStatus: "pending",
+          });
+
+          // ৩. মোট আর্নিং হিসাব
+          const history = await paymentCollection
+            .find({ doctorId: id })
+            .toArray();
+          const totalEarning = history.reduce(
+            (sum, item) => sum + Number(item.amount || 0),
+            0,
+          );
+
+          // ৪. ইউনিক পেশেন্ট কাউন্ট এগ্রিগেশন
+          const patientResult = await apointmentCollection
+            .aggregate([
+              { $match: { doctorId: id } },
+              { $group: { _id: "$patientId" } }, // ✅ $ sign added
+              { $group: { _id: null, totalPatient: { $sum: 1 } } },
+              { $project: { _id: 0, totalPatient: 1 } },
+            ])
+            .toArray();
+
+          const finalPatientCount =
+            patientResult.length > 0 ? patientResult[0].totalPatient : 0; // ✅ [0] added
+
+          // ৫. এভারেজ রেটিং এগ্রিগেশন
+          const aggResult = await reviewsCollection
+            .aggregate([
+              { $match: { doctorId: id } },
+              { $group: { _id: null, avgRating: { $avg: "$rating" } } },
+              {
+                $project: { _id: 0, avgRating: { $round: ["$avgRating", 1] } },
+              },
+            ])
+            .toArray();
+
+          const finalAvgRating =
+            aggResult.length > 0 ? aggResult[0].avgRating : 0; // ✅ [0] added
+
+          // ── 🌟 প্রফেশনাল রেসপন্স সেন্ড ──
+          res.status(200).json({
+            success: true,
+            stats: {
+              totalAppointments: totalAppointment,
+              pendingRequests: pendingRequests,
+              totalEarnings: totalEarning,
+              patientCount: finalPatientCount,
+              averageRating: finalAvgRating,
+            },
+          });
+        } catch (error) {
+          console.error("Error fetching doctor stats:", error);
+          res
+            .status(500)
+            .json({ success: false, error: "Internal Server Error" });
         }
+      },
+    );
 
-        // ১. মোট অ্যাপয়েন্টমেন্ট সংখ্যা
-        const totalAppointment = await apointmentCollection.countDocuments({
-          doctorId: id,
-        });
-
-        // ২. পেন্ডিং অ্যাপয়েন্টমেন্ট রিকোয়েস্ট সংখ্যা (আপনার স্ট্রাকচার অনুযায়ী appointmentStatus ফিল্ড ইউজ করা হয়েছে)
-        const pendingRequests = await apointmentCollection.countDocuments({
-          doctorId: id,
-          appointmentStatus: "pending",
-        });
-
-        // ৩. মোট আর্নিং হিসাব
-        const history = await paymentCollection
-          .find({ doctorId: id })
-          .toArray();
-        const totalEarning = history.reduce(
-          (sum, item) => sum + Number(item.amount || 0),
-          0,
-        );
-
-        // ৪. ইউনিক পেশেন্ট কাউন্ট এগ্রিগেশন
-        const patientResult = await apointmentCollection
-          .aggregate([
-            { $match: { doctorId: id } },
-            { $group: { _id: "$patientId" } }, // ✅ $ sign added
-            { $group: { _id: null, totalPatient: { $sum: 1 } } },
-            { $project: { _id: 0, totalPatient: 1 } },
-          ])
-          .toArray();
-
-        const finalPatientCount =
-          patientResult.length > 0 ? patientResult[0].totalPatient : 0; // ✅ [0] added
-
-        // ৫. এভারেজ রেটিং এগ্রিগেশন
-        const aggResult = await reviewsCollection
-          .aggregate([
-            { $match: { doctorId: id } },
-            { $group: { _id: null, avgRating: { $avg: "$rating" } } },
-            { $project: { _id: 0, avgRating: { $round: ["$avgRating", 1] } } },
-          ])
-          .toArray();
-
-        const finalAvgRating =
-          aggResult.length > 0 ? aggResult[0].avgRating : 0; // ✅ [0] added
-
-        // ── 🌟 প্রফেশনাল রেসপন্স সেন্ড ──
-        res.status(200).json({
-          success: true,
-          stats: {
-            totalAppointments: totalAppointment,
-            pendingRequests: pendingRequests,
-            totalEarnings: totalEarning,
-            patientCount: finalPatientCount,
-            averageRating: finalAvgRating,
-          },
-        });
-      } catch (error) {
-        console.error("Error fetching doctor stats:", error);
-        res
-          .status(500)
-          .json({ success: false, error: "Internal Server Error" });
-      }
-    });
-
-    app.get("/api/stats/admin", async (req, res) => {
+    app.get("/api/stats/admin", verifyToken, verifyAdmin, async (req, res) => {
       try {
         // ১. মোট অ্যাপয়েন্টমেন্ট সংখ্যা (status pending বা reject বাদে)
         const totalAppointments = await apointmentCollection.countDocuments({
@@ -182,61 +251,66 @@ async function run() {
     });
 
     // ============== admin related api =============
-    app.get("/api/admin/doctor-rating-stats", async (req, res) => {
-      try {
-        const statistic = await doctorsCollection
-          .aggregate([
-            {
-              // ১. গড়ে রেটিংগুলোকে রাউন্ড (Round) করা হচ্ছে (যেমন: 4.7 বা 4.5 কে 5 অথবা 4 এ রূপান্তর)
-              // যদি আপনার ফিল্ডের নাম averageRating না হয়ে অন্য কিছু হয়, তবে সেটি দিন।
-              $project: {
-                roundedRating: { $round: ["$averageRating", 0] },
+    app.get(
+      "/api/admin/doctor-rating-stats",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const statistic = await doctorsCollection
+            .aggregate([
+              {
+                // ১. গড়ে রেটিংগুলোকে রাউন্ড (Round) করা হচ্ছে (যেমন: 4.7 বা 4.5 কে 5 অথবা 4 এ রূপান্তর)
+                // যদি আপনার ফিল্ডের নাম averageRating না হয়ে অন্য কিছু হয়, তবে সেটি দিন।
+                $project: {
+                  roundedRating: { $round: ["$averageRating", 0] },
+                },
               },
-            },
-            {
-              // ২. রাউন্ডেড রেটিং অনুযায়ী গ্রুপ করে মোট ডাক্তারের সংখ্যা গোনা হচ্ছে
-              $group: {
-                _id: "$roundedRating",
-                count: { $sum: 1 },
+              {
+                // ২. রাউন্ডেড রেটিং অনুযায়ী গ্রুপ করে মোট ডাক্তারের সংখ্যা গোনা হচ্ছে
+                $group: {
+                  _id: "$roundedRating",
+                  count: { $sum: 1 },
+                },
               },
-            },
-            {
-              // ৩. রেটিং ৫ থেকে ১ ক্রমানুসারে সাজানো (Descending order)
-              $sort: { _id: -1 },
-            },
-          ])
-          .toArray();
+              {
+                // ৩. রেটিং ৫ থেকে ১ ক্রমানুসারে সাজানো (Descending order)
+                $sort: { _id: -1 },
+              },
+            ])
+            .toArray();
 
-        // ৪. চার্টের সুবিধার জন্য ডাটা ফরম্যাট করা (যাতে কোনো স্টার খালি থাকলে ০ দেখায়)
-        const ratingMap = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+          // ৪. চার্টের সুবিধার জন্য ডাটা ফরম্যাট করা (যাতে কোনো স্টার খালি থাকলে ০ দেখায়)
+          const ratingMap = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
 
-        statistic.forEach((item) => {
-          // কেবল ১ থেকে ৫ এর মধ্যে বৈধ রেটিংগুলো ম্যাপে বসবে
-          if (item._id >= 1 && item._id <= 5) {
-            ratingMap[item._id] = item.count;
-          }
-        });
+          statistic.forEach((item) => {
+            // কেবল ১ থেকে ৫ এর মধ্যে বৈধ রেটিংগুলো ম্যাপে বসবে
+            if (item._id >= 1 && item._id <= 5) {
+              ratingMap[item._id] = item.count;
+            }
+          });
 
-        // Recharts-এর জন্য ফ্রন্টএন্ড ফ্রেন্ডলি অ্যারে ফরম্যাট
-        const formattedData = [
-          { rating: "5 Star", doctors: ratingMap[5] },
-          { rating: "4 Star", doctors: ratingMap[4] },
-          { rating: "3 Star", doctors: ratingMap[3] },
-          { rating: "2 Star", doctors: ratingMap[2] },
-          { rating: "1 Star", doctors: ratingMap[1] },
-        ];
+          // Recharts-এর জন্য ফ্রন্টএন্ড ফ্রেন্ডলি অ্যারে ফরম্যাট
+          const formattedData = [
+            { rating: "5 Star", doctors: ratingMap[5] },
+            { rating: "4 Star", doctors: ratingMap[4] },
+            { rating: "3 Star", doctors: ratingMap[3] },
+            { rating: "2 Star", doctors: ratingMap[2] },
+            { rating: "1 Star", doctors: ratingMap[1] },
+          ];
 
-        res.status(200).json({ success: true, data: formattedData });
-      } catch (error) {
-        console.error("Error fetching doctor rating stats:", error);
-        res
-          .status(500)
-          .json({ success: false, message: "Internal Server Error" });
-      }
-    });
+          res.status(200).json({ success: true, data: formattedData });
+        } catch (error) {
+          console.error("Error fetching doctor rating stats:", error);
+          res
+            .status(500)
+            .json({ success: false, message: "Internal Server Error" });
+        }
+      },
+    );
 
     // all appointments
-    app.get("/api/appointments", async (req, res) => {
+    app.get("/api/appointments", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const result = await apointmentCollection.find().toArray();
         res.send(result);
@@ -247,7 +321,7 @@ async function run() {
       }
     });
 
-    app.delete("/api/users/:id", async (req, res) => {
+    app.delete("/api/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const id = req.params.id;
         const query = { _id: new ObjectId(id) };
@@ -260,74 +334,79 @@ async function run() {
       }
     });
 
-    app.get("/api/reviews/chartdata", async (req, res) => {
-      try {
-        // ── MongoDB Aggregation Pipeline ──────────────────────────
-        const topDoctorsData = await reviewsCollection
-          .aggregate([
-            {
-              // ১. প্রতি doctorId এর উপর ভিত্তি করে গ্রুপ করা
-              $group: {
-                _id: "$doctorId",
-                doctorName: { $first: "$doctorName" }, // প্রথম ডকুমেন্ট থেকে নাম নেওয়া
-                // যদি আপনার ডক্টর স্কিমা বা রিভিউতে ইমেজ থাকে, সেটার জন্য (ভবিষ্যতের সেফটি):
-                doctorImage: { $first: "$doctorPhoto" }, // অথবা ডক্টর কালেকশন থেকে লুপ করে আনা যায়, আপাতত প্রথম এন্ট্রি নিচ্ছি
-                averageRating: { $avg: "$rating" }, // রেটিং এর গড় (Average) বের করা
-                totalReviews: { $sum: 1 }, // ওই ডক্টরের মোট রিভিউ সংখ্যা (অপশনাল)
+    app.get(
+      "/api/reviews/chartdata",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          // ── MongoDB Aggregation Pipeline ──────────────────────────
+          const topDoctorsData = await reviewsCollection
+            .aggregate([
+              {
+                // ১. প্রতি doctorId এর উপর ভিত্তি করে গ্রুপ করা
+                $group: {
+                  _id: "$doctorId",
+                  doctorName: { $first: "$doctorName" }, // প্রথম ডকুমেন্ট থেকে নাম নেওয়া
+                  // যদি আপনার ডক্টর স্কিমা বা রিভিউতে ইমেজ থাকে, সেটার জন্য (ভবিষ্যতের সেফটি):
+                  doctorImage: { $first: "$doctorPhoto" }, // অথবা ডক্টর কালেকশন থেকে লুপ করে আনা যায়, আপাতত প্রথম এন্ট্রি নিচ্ছি
+                  averageRating: { $avg: "$rating" }, // রেটিং এর গড় (Average) বের করা
+                  totalReviews: { $sum: 1 }, // ওই ডক্টরের মোট রিভিউ সংখ্যা (অপশনাল)
+                },
               },
-            },
-            {
-              // ২. গড় রেটিং অনুযায়ী বড় থেকে ছোট (Descending) সর্ট করা
-              $sort: { averageRating: -1 },
-            },
-            {
-              // ৩. শুধুমাত্র টপ ৫ জন ডক্টর নেওয়া
-              $limit: 5,
-            },
-            {
-              // ৪. ফ্রন্টএন্ডে পাঠানোর জন্য প্রজেক্ট বা ফরম্যাট করা (গড় রেটিং ২ ডেসিমেল এ ফিক্স করার জন্য সুবিধা)
-              $project: {
-                _id: 1,
-                doctorName: 1,
-                doctorImage: 1,
-                averageRating: { $round: ["$averageRating", 1] }, // ১ ডেসিমেল পর্যন্ত রাউন্ড (যেমন: 4.8)
-                totalReviews: 1,
+              {
+                // ২. গড় রেটিং অনুযায়ী বড় থেকে ছোট (Descending) সর্ট করা
+                $sort: { averageRating: -1 },
               },
-            },
-          ])
-          .toArray();
+              {
+                // ৩. শুধুমাত্র টপ ৫ জন ডক্টর নেওয়া
+                $limit: 5,
+              },
+              {
+                // ৪. ফ্রন্টএন্ডে পাঠানোর জন্য প্রজেক্ট বা ফরম্যাট করা (গড় রেটিং ২ ডেসিমেল এ ফিক্স করার জন্য সুবিধা)
+                $project: {
+                  _id: 1,
+                  doctorName: 1,
+                  doctorImage: 1,
+                  averageRating: { $round: ["$averageRating", 1] }, // ১ ডেসিমেল পর্যন্ত রাউন্ড (যেমন: 4.8)
+                  totalReviews: 1,
+                },
+              },
+            ])
+            .toArray();
 
-        // res.send({ success: true, data: topDoctorsData }, { status: 200 });
-        res.send(topDoctorsData);
-      } catch (error) {
-        console.error("Analytics API Error:", error);
-        return NextResponse.json(
-          { success: false, message: "Internal Server Error" },
-          { status: 500 },
-        );
-      }
-    });
+          // res.send({ success: true, data: topDoctorsData }, { status: 200 });
+          res.send(topDoctorsData);
+        } catch (error) {
+          console.error("Analytics API Error:", error);
+          return NextResponse.json(
+            { success: false, message: "Internal Server Error" },
+            { status: 500 },
+          );
+        }
+      },
+    );
 
     // user
     // ================= all  users   API ===============
     // ===========================================================
-    app.get("/api/users", async (req, res) => {
+    app.get("/api/users", verifyToken, verifyAdmin, async (req, res) => {
       const result = await userCollection.find().toArray();
       res.send(result);
     });
 
-    app.post("/api/patients", async (req, res) => {
+    app.post("/api/patients", verifyToken, async (req, res) => {
       const newUser = req.body;
       const result = await patientCollection.insertOne(newUser);
       res.send(result);
     });
 
-    app.get("/api/patients", async (req, res) => {
+    app.get("/api/patients", verifyToken, verifyAdmin, async (req, res) => {
       const result = await patientCollection.find().toArray();
       res.send(result);
     });
     // get patient by login session id(userId)
-    app.get("/api/patients/:id", async (req, res) => {
+    app.get("/api/patients/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
 
@@ -346,7 +425,7 @@ async function run() {
     });
 
     // ================= all  doctors   API ===============
-    app.post("/api/doctors", async (req, res) => {
+    app.post("/api/doctors", verifyToken, async (req, res) => {
       const newUser = req.body;
       const result = await doctorsCollection.insertOne(newUser);
       res.send(result);
@@ -461,7 +540,7 @@ async function run() {
 
     // get doctor by id
 
-    app.get("/api/doctors/:id", async (req, res) => {
+    app.get("/api/doctors/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
         const from = req.query.from;
@@ -484,7 +563,7 @@ async function run() {
       }
     });
 
-    app.patch("/api/doctors/profile", async (req, res) => {
+    app.patch("/api/doctors/profile", verifyToken, async (req, res) => {
       try {
         const {
           userId,
@@ -531,7 +610,7 @@ async function run() {
 
     // ================= all  appointment ralated   API ===============
     // ===========================================================
-    app.get("/api/appointmentslots/:id", async (req, res) => {
+    app.get("/api/appointmentslots/:id", verifyToken, async (req, res) => {
       try {
         const doctorId = req.params.id;
         const date = req.query.date;
@@ -573,7 +652,7 @@ async function run() {
       }
     });
 
-    app.get("/api/appointments/:id", async (req, res) => {
+    app.get("/api/appointments/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
         const forPayment = req.query.forPayment;
@@ -610,53 +689,63 @@ async function run() {
       }
     });
 
-    app.post("/api/appointments", async (req, res) => {
-      const newAppointment = req.body;
-      const result = await apointmentCollection.insertOne(newAppointment);
-      res.send(result);
-    });
-    app.patch("/api/appointments", async (req, res) => {
-      try {
-        const {
-          id,
-          paymentStatus,
-          appointmentStatus,
-          workingHours,
-          availableDays,
-          slotDuration,
-        } = req.body;
-
-        const query = {
-          _id: new ObjectId(id),
-        };
-
-        // $set অপারেটর ব্যবহার করে শুধু status আপডেট করা হচ্ছে
-        let updateDoc;
-        if (paymentStatus) {
-          updateDoc = {
-            $set: {
-              paymentStatus: paymentStatus,
-            },
-          };
-        }
-        if (appointmentStatus) {
-          updateDoc = {
-            $set: {
-              appointmentStatus: appointmentStatus,
-            },
-          };
-        }
-
-        const result = await apointmentCollection.updateOne(query, updateDoc);
-
+    app.post(
+      "/api/appointments",
+      verifyToken,
+      verifyPatient,
+      async (req, res) => {
+        const newAppointment = req.body;
+        const result = await apointmentCollection.insertOne(newAppointment);
         res.send(result);
-      } catch (error) {
-        console.error("Database update error:", error);
-        res.status(500).send({ error: "Internal Server Error" });
-      }
-    });
+      },
+    );
+    app.patch(
+      "/api/appointments",
+      verifyToken,
+      verifyPatient,
+      async (req, res) => {
+        try {
+          const {
+            id,
+            paymentStatus,
+            appointmentStatus,
+            workingHours,
+            availableDays,
+            slotDuration,
+          } = req.body;
 
-    app.patch("/api/doctors/schedule", async (req, res) => {
+          const query = {
+            _id: new ObjectId(id),
+          };
+
+          // $set অপারেটর ব্যবহার করে শুধু status আপডেট করা হচ্ছে
+          let updateDoc;
+          if (paymentStatus) {
+            updateDoc = {
+              $set: {
+                paymentStatus: paymentStatus,
+              },
+            };
+          }
+          if (appointmentStatus) {
+            updateDoc = {
+              $set: {
+                appointmentStatus: appointmentStatus,
+              },
+            };
+          }
+
+          const result = await apointmentCollection.updateOne(query, updateDoc);
+
+          res.send(result);
+        } catch (error) {
+          console.error("Database update error:", error);
+          res.status(500).send({ error: "Internal Server Error" });
+        }
+      },
+    );
+
+    app.patch("/api/doctors/schedule", verifyToken, async (req, res) => {
       try {
         const { userId, availableDays, workingHours, slotDuration } = req.body;
 
@@ -693,19 +782,19 @@ async function run() {
 
     // ================= all  users   API ===============
     // ================= all  paymennt related    API ===============
-    app.post("/api/payment", async (req, res) => {
+    app.post("/api/payment", verifyToken, verifyPatient, async (req, res) => {
       const payment = req.body;
       const result = await paymentCollection.insertOne(payment);
       res.send(result);
     });
 
     // get all payments history
-    app.get("/api/payment", async (req, res) => {
+    app.get("/api/payment", verifyToken, verifyAdmin, async (req, res) => {
       const result = await paymentCollection.find().toArray();
       res.send(result);
     });
 
-    app.get("/api/payment/:id", async (req, res) => {
+    app.get("/api/payment/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
         const forDoctor = req.query.forDoctor;
@@ -741,7 +830,7 @@ async function run() {
     });
 
     // ===================all review related api================
-    app.get("/api/reviews/:id", async (req, res) => {
+    app.get("/api/reviews/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
         const forDoctor = req.query.forDoctor;
@@ -768,7 +857,7 @@ async function run() {
     });
 
     // create a review update api for patient
-    app.patch("/api/reviews", async (req, res) => {
+    app.patch("/api/reviews", verifyToken, async (req, res) => {
       try {
         const id = req.body.id;
 
@@ -811,7 +900,7 @@ async function run() {
       }
     });
     // create a review post api for patient
-    app.post("/api/reviews", async (req, res) => {
+    app.post("/api/reviews", verifyToken, async (req, res) => {
       try {
         const review = req.body;
         const result = await reviewsCollection.insertOne(review);
@@ -824,7 +913,7 @@ async function run() {
     });
 
     // create a review delete api for patient and admin only
-    app.delete("/api/reviews/:id", async (req, res) => {
+    app.delete("/api/reviews/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
 
@@ -842,51 +931,64 @@ async function run() {
     });
 
     // =================== ALL prescription related api  =================
-    app.post("/api/prescriptions", async (req, res) => {
-      try {
-        const prescription = req.body;
-        const result = await prescriptionCollection.insertOne(prescription);
-        res.send(result);
-      } catch (error) {
-        res.status(500).json({
-          error: "Internal Server Error",
-        });
-      }
-    });
-    app.patch("/api/prescriptions", async (req, res) => {
-      try {
-        const id = req.body.prescriptionId;
-        const { diagnosis, medications, notes } = req.body;
-        const query = {
-          _id: new ObjectId(id),
-        };
-        const updateFields = {};
-        if (diagnosis) {
-          updateFields.diagnosis = diagnosis;
+    app.post(
+      "/api/prescriptions",
+      verifyToken,
+      verifyDoctor,
+      async (req, res) => {
+        try {
+          const prescription = req.body;
+          const result = await prescriptionCollection.insertOne(prescription);
+          res.send(result);
+        } catch (error) {
+          res.status(500).json({
+            error: "Internal Server Error",
+          });
         }
-        if (medications) {
-          updateFields.medications = medications;
-        }
-        if (notes) {
-          updateFields.notes = notes;
-        }
-        if (Object.keys(updateFields).length === 0) {
-          return res
-            .status(400)
-            .send({ error: "No configuration fields provided to update" });
-        }
+      },
+    );
+    app.patch(
+      "/api/prescriptions",
+      verifyToken,
+      verifyDoctor,
+      async (req, res) => {
+        try {
+          const id = req.body.prescriptionId;
+          const { diagnosis, medications, notes } = req.body;
+          const query = {
+            _id: new ObjectId(id),
+          };
+          const updateFields = {};
+          if (diagnosis) {
+            updateFields.diagnosis = diagnosis;
+          }
+          if (medications) {
+            updateFields.medications = medications;
+          }
+          if (notes) {
+            updateFields.notes = notes;
+          }
+          if (Object.keys(updateFields).length === 0) {
+            return res
+              .status(400)
+              .send({ error: "No configuration fields provided to update" });
+          }
 
-        const updateDoc = { $set: updateFields };
+          const updateDoc = { $set: updateFields };
 
-        const result = await prescriptionCollection.updateOne(query, updateDoc);
+          const result = await prescriptionCollection.updateOne(
+            query,
+            updateDoc,
+          );
 
-        res.send(result);
-      } catch (error) {
-        console.error("Doctor schedule update error:", error);
-        res.status(500).send({ error: "Internal Server Error" });
-      }
-    });
-    app.get("/api/prescriptions/:id", async (req, res) => {
+          res.send(result);
+        } catch (error) {
+          console.error("Doctor schedule update error:", error);
+          res.status(500).send({ error: "Internal Server Error" });
+        }
+      },
+    );
+    app.get("/api/prescriptions/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
         const forDoctor = req.query.forDoctor;
