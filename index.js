@@ -42,6 +42,7 @@ async function run() {
     const paymentCollection = database.collection("Payments");
     const prescriptionCollection = database.collection("Prescriptions");
     const sessionCollection = database.collection("session");
+    const favouriteCollection = database.collection("FavouriteDoctors");
 
     // ================verify related ==================
 
@@ -324,8 +325,31 @@ async function run() {
     app.delete("/api/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const id = req.params.id;
-        const query = { _id: new ObjectId(id) };
+        const query = {
+          _id: new ObjectId(id),
+        };
         const result = await userCollection.deleteOne(query);
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+
+    app.patch("/api/users/:id", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { role, isSuspended } = req.body;
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = {};
+        if (isSuspended) {
+          updateDoc.$set = { isSuspended: isSuspended };
+        }
+        if (role) {
+          updateDoc.$set = { role: role };
+        }
+        const result = await userCollection.updateOne(query, updateDoc);
         res.send(result);
       } catch (error) {
         res.status(500).json({
@@ -537,8 +561,6 @@ async function run() {
         });
       }
     });
-
-    // get doctor by id
 
     app.get("/api/doctors/:id", verifyToken, async (req, res) => {
       try {
@@ -1015,6 +1037,67 @@ async function run() {
         });
       }
     });
+
+    // ==================== favourite related api =====================
+    app.post("/api/favourite", verifyToken, verifyDoctor, async (req, res) => {
+      try {
+        const favourite = req.body;
+        const result = await favouriteCollection.insertOne(favourite);
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+
+    app.get("/api/favourite/:id", verifyToken, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const forDoctor = req.query.forDoctor;
+        const forPatient = req.query.forPatient;
+        const query = {};
+        if (forDoctor) {
+          query._id = new ObjectId(id);
+        }
+        if (forPatient) {
+          query.patientId = id;
+        }
+        let result;
+        if (forPatient) {
+          result = await favouriteCollection.find(query).toArray();
+        }
+
+        result = await favouriteCollection.findOne(query);
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({
+          error: "Internal Server Error",
+        });
+      }
+    });
+
+    app.delete(
+      "/api/favourite/:id",
+      verifyToken,
+      verifyPatient,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+
+          const query = {
+            _id: new ObjectId(id),
+          };
+
+          const result = await favouriteCollection.deleteOne(query);
+          res.send(result);
+        } catch (error) {
+          res.status(500).json({
+            error: "Internal Server Error",
+          });
+        }
+      },
+    );
 
     // ===========================================================
     // Send a ping to confirm a successful connection
