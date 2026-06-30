@@ -869,6 +869,10 @@ app.get("/api/reviews/:id", verifyToken, async (req, res) => {
     });
   }
 });
+app.get("/api/reviews",async (req,res) => {
+  const result = await reviewsCollection.find().toArray();
+  res.send(result);
+})
 
 // create a review update api for patient
 app.patch("/api/reviews", verifyToken, async (req, res) => {
